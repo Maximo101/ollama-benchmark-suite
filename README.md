@@ -20,3 +20,8 @@ A collection of Bash scripts designed to help users manage and profile local AI 
 4. Run the benchmark: `./ollama_benchmark_v1.sh`.
 
 Can be used with 'User Scripts' in Unraid to keep your ollama models up to date automatically.
+
+In your ollama_benchmark_v1.sh, there is the line:
+chown -R nobody:users "$BASE_DIR" && chmod -R 777 "$BASE_DIR"
+This is perfect for Unraid's permission system, but users on standard Ubuntu or Windows (WSL) might get a "Permission Denied" error if they aren't running as root. 
+Note that the script is optimized for Unraid/Docker environments, if you want ot use this on other systems, comment out that line.
