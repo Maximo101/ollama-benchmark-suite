@@ -16,4 +16,7 @@ A collection of Bash scripts designed to help users manage and profile local AI 
 ## 📂 Usage
 1. Clone this repo.
 2. Make scripts executable: `chmod +x *.sh`.
-3. Run the benchmark: `./ollama_benchmark_v1.sh`.
+3. Run the updates: `./update_ollama_models.sh`.
+4. Run the benchmark: `./ollama_benchmark_v1.sh`.
+
+Can be used with 'User Scripts' in Unraid to keep your ollama models up to date automatically.
