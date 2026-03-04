@@ -1,6 +1,6 @@
 # Ollama Benchmark & Maintenance Suite
 
-A collection of Bash scripts designed to help users manage and profile local AI models running in Docker (specifically optimized for Unraid/Linux environments).
+A collection of Bash scripts designed to help users manage and profile local AI models running on Ollama in Docker (specifically optimized for Unraid/Linux environments).
 
 ## 🚀 Features
 - **Hard VRAM Purge:** Clears the GPU memory and OS cache between runs for clean "Cold Boot" results.
