@@ -1,6 +1,6 @@
 # Ollama Benchmark & Maintenance Suite
 
-A collection of Bash scripts designed to help users manage, update, and rigorously profile local AI models running in Docker (specifically optimized for Linux/Unraid environments). 
+A collection of Bash scripts designed to help users manage, update, and rigorously profile local AI models running on Ollama in Docker (specifically optimized for Linux/Unraid environments). 
 
 This suite ensures your local LLMs are not only kept up-to-date but are also tested under strict, standardized conditions to provide accurate performance metrics.
 
@@ -70,3 +70,6 @@ chmod +x *.sh
 ```
 
 > **Note:** All output logs and CSV files are automatically saved to the `results/` folder.
+
+## Reference
+[Ollama](https://ollama.com/)
