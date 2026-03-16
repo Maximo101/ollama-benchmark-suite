@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Ollama Model Update and Report Script for UnRaid Docker
+# Ollama Model Update and Report Script
 # This script updates all Ollama models and creates a detailed CSV report
 
 # --- CONFIGURATION ---
-# Define the base directory and results path based on your UnRaid User Scripts location
-BASE_DIR="$(dirname "$(realpath "$0")")" 
+# Dynamically define the base directory (GitHub portable)
+BASE_DIR="$(dirname "$(realpath "$0")")"
 RESULTS_DIR="$BASE_DIR/results"
 # ---------------------
 
@@ -28,7 +28,7 @@ uptodate_count=0 # New counter for up-to-date models
 # Ensure the results directory exists and define file paths
 mkdir -p "$RESULTS_DIR"
 
-# CSV file setup - Path now points to the new RESULTS_DIR
+# CSV file setup
 csv_file="$RESULTS_DIR/ollama_models_report_$(date +%Y%m%d_%H%M%S).csv"
 temp_dir="$RESULTS_DIR/temp_ollama_update_$$"
 mkdir -p "$temp_dir"
@@ -54,7 +54,6 @@ if [ -z "$OLLAMA_IP" ]; then
     exit 1
 fi
 
-OLLAMA_HOST="$OLLAMA_IP:11434" # Define host for API checks, though not used in original script's core logic
 echo -e "${GREEN}✓ Ollama container found at IP: $OLLAMA_IP${NC}"
 echo ""
 
@@ -63,73 +62,17 @@ run_ollama_cmd() {
     docker exec "$OLLAMA_CONTAINER" ollama "$@"
 }
 
-# Function to get model info from Ollama API using better method (Original Logic)
-get_model_info_from_api() {
+# Function to determine the library status based on naming convention
+get_library_status() {
     local model_name="$1"
-    local base_name=$(echo "$model_name" | awk -F':' '{print $1}')
-    local tag=$(echo "$model_name" | awk -F':' '{print $2}')
-    [ -z "$tag" ] && tag="latest"
-    
-    # Check for custom/HuggingFace prefix
-    if echo "$base_name" | grep -q "^hf\.co/"; then
-        echo "custom"
-        return 1
+
+    if [[ "$model_name" == hf.co/* ]]; then
+        echo "Hugging Face"
+    else
+        # Any third method added in the future could be placed as an 'elif' here
+        echo "Ollama"
     fi
-    
-    # Try multiple registry endpoints
-    local registry_urls=(
-        "https://registry.ollama.ai/v2/${base_name}/manifests/${tag}"
-        "https://ollama.com/library/${base_name}"
-    )
-    
-    for registry_url in "${registry_urls[@]}"; do
-        if command -v curl >/dev/null 2>&1; then
-            local response=$(curl -s -I --connect-timeout 5 --max-time 10 "$registry_url" 2>/dev/null | head -1)
-            if echo "$response" | grep -q "200\|302"; then
-                echo "found"
-                return 0
-            fi
-        elif command -v wget >/dev/null 2>&1; then
-            if wget -q --timeout=5 --spider "$registry_url" 2>/dev/null; then
-                echo "found"
-                return 0
-            fi
-        fi
-    done
-    
-    echo "custom"
-    return 1
 }
-
-# Function to get detailed model info from Ollama show command (Original Logic - REMOVED AS UNUSED)
-# get_detailed_model_info() { ... } 
-
-# Function to extract model attributes based on model name and capabilities
-# REMOVED: The entire 'Fallback to known model patterns' logic
-get_model_attributes() {
-    local model_name="$1"
-    local model_info_file="$temp_dir/model_info_${model_name//\//_}.json"
-    local attributes=""
-    
-    # Check for vision and tools capabilities based on modelfile content (retained original check)
-    if [ -f "$model_info_file" ]; then
-        if grep -qi "vision\|image\|visual" "$model_info_file" 2>/dev/null; then
-            attributes="${attributes}vision,"
-        fi
-        if grep -qi "tool\|function" "$model_info_file" 2>/dev/null; then
-            attributes="${attributes}tools,"
-        fi
-    fi
-    
-    # Clean up attributes
-    attributes=$(echo "$attributes" | sed 's/,$//g')
-    [ -z "$attributes" ] && attributes="none"
-    
-    echo "$attributes"
-}
-
-# Function to estimate parameters from model size (Original Logic - REMOVED AS UNUSED)
-# estimate_parameters() { ... }
 
 # Get list of models from the container
 echo -e "${YELLOW}Getting list of Ollama models from container...${NC}"
@@ -144,9 +87,9 @@ fi
 # Parse model list and populate array (in reverse order)
 temp_models=()
 while IFS= read -r line; do
-    if [ ! -z "$line" ]; then
+    if [ -n "$line" ]; then
         model_name=$(echo "$line" | awk '{print $1}')
-        if [ ! -z "$model_name" ] && [ "$model_name" != "NAME" ]; then
+        if [ -n "$model_name" ] && [ "$model_name" != "NAME" ]; then
             temp_models+=("$model_name")
         fi
     fi
@@ -168,42 +111,52 @@ echo "Model Name,Model ID,Size,Local Modified Date,Library Status,Update Status"
 for i in "${!all_models[@]}"; do
     model="${all_models[$i]}"
     echo -e "${YELLOW}[$((i+1))/$total_models] Processing model: $model${NC}"
-    
-    # Get current model info from container (Original Logic)
+
+    # Get current model info from container BEFORE pulling
     model_info=$(run_ollama_cmd list | grep "^$model " | head -1)
-    model_id=$(echo "$model_info" | awk '{print $2}')
+    old_model_id=$(echo "$model_info" | awk '{print $2}')
+
+    # Capture size and modified date BEFORE the update touch
     model_size=$(echo "$model_info" | awk '{print $3" "$4}')
     model_modified=$(echo "$model_info" | awk '{for(i=5;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/[[:space:]]*$//')
-    
-    # Check if model exists in Ollama registry (Original Logic)
-    echo "  Checking registry availability..."
-    library_status=$(get_model_info_from_api "$model")
-    
+
+    # Check library status via our new function
+    library_status=$(get_library_status "$model")
+
     # Attempt to update the model
     echo "  Checking for updates..."
     pull_output_file="$temp_dir/pull_output_$i.txt"
-    
-    # Capture the pull command output using tee, which is necessary for the robust check
+
+    # Capture the pull command output using tee
     docker exec "$OLLAMA_CONTAINER" ollama pull "$model" 2>&1 | tee "$pull_output_file"
     pull_exit_code=$?
-    
-    # Determine Update Status - IMPLEMENTING ROBUST CHECK
+
+    # Get new model info from container AFTER pulling
+    new_model_info=$(run_ollama_cmd list | grep "^$model " | head -1)
+    new_model_id=$(echo "$new_model_info" | awk '{print $2}')
+
+    # Determine Update Status
     update_status="Update Failed" # Default failure state
-    
+
     if [ $pull_exit_code -eq 0 ]; then
-        # Check the pull output for signs of a real update (i.e., pulling new layers)
-        # We look for the pattern: "pulling [12-char hex ID]..."
-        if grep -qE '^pulling [0-9a-f]{12}\.\.\.' "$pull_output_file"; then
-            # Found lines indicating a layer pull = actual update
-            update_status="Updated Successfully"
+        # Check if the model ID (digest) changed
+        if [ "$old_model_id" != "$new_model_id" ] && [ -n "$old_model_id" ]; then
+            update_status="Updated"
             updated_models+=("$model")
             updated_count=$((updated_count + 1))
-            echo -e "  ${GREEN}✓ Updated successfully (New layers pulled)${NC}"
+            echo -e "  ${GREEN}✓ Updated successfully (Model ID changed)${NC}"
         else
-            # Pull was successful, but no new layers were pulled = up to date.
-            update_status="Already up to date"
-            uptodate_count=$((uptodate_count + 1))
-            echo -e "  ${BLUE}✓ Already up to date (No new layers pulled)${NC}"
+            # Also check if it actually downloaded anything (pulling percentages other than 100%)
+            if grep -oE '[0-9]+%' "$pull_output_file" | grep -qv '^100%'; then
+                update_status="Updated"
+                updated_models+=("$model")
+                updated_count=$((updated_count + 1))
+                echo -e "  ${GREEN}✓ Updated successfully (Downloaded new layers)${NC}"
+            else
+                update_status="Already up to date"
+                uptodate_count=$((uptodate_count + 1))
+                echo -e "  ${BLUE}✓ Already up to date (No new layers pulled)${NC}"
+            fi
         fi
     else
         update_status="Update Failed"
@@ -211,16 +164,16 @@ for i in "${!all_models[@]}"; do
         failed_count=$((failed_count + 1))
         echo -e "  ${RED}✗ Update failed${NC}"
     fi
-    
-    # Write to CSV (escape quotes in data - Original Logic)
+
+    # Write to CSV (escape quotes in data)
     model_csv=$(echo "$model" | sed 's/"/"""/g')
-    model_id_csv=$(echo "$model_id" | sed 's/"/"""/g')
+    model_id_csv=$(echo "$new_model_id" | sed 's/"/"""/g')
     model_size_csv=$(echo "$model_size" | sed 's/"/"""/g')
     model_modified_csv=$(echo "$model_modified" | sed 's/"/"""/g')
     update_status_csv=$(echo "$update_status" | sed 's/"/"""/g')
-    
+
     echo "\"$model_csv\",\"$model_id_csv\",\"$model_size_csv\",\"$model_modified_csv\",\"$library_status\",\"$update_status_csv\"" >> "$csv_file"
-    
+
     # Wait 2 seconds before next model (except for the last one)
     if [ $((i + 1)) -lt $total_models ]; then
         echo "  Waiting 2 seconds before next model..."
@@ -261,6 +214,4 @@ fi
 echo -e "${BLUE}📊 Detailed report saved to: $csv_file${NC}"
 echo -e "${YELLOW}📝 Notes:${NC}"
 echo -e "${YELLOW}  • Models processed from bottom to top to maintain list order${NC}"
-echo -e "${YELLOW}  • 'found' = Available in official Ollama registry${NC}"
-echo -e "${YELLOW}  • 'custom' = Custom model or HuggingFace import${NC}"
 echo ""
