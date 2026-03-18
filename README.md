@@ -105,3 +105,19 @@ python ollama_benchmark_dashboard.py my_results.csv report.html
 
 ## Reference
 [Ollama](https://ollama.com/)
+
+## Dashboard example
+
+<img width="1328" height="656" alt="b1" src="https://github.com/user-attachments/assets/f735248c-72f2-4a68-8f4a-04bb343be5c0" />
+
+<img width="1328" height="452" alt="b2" src="https://github.com/user-attachments/assets/e5f13570-fc2b-4751-9f8c-c15246a16263" />
+
+<img width="1328" height="786" alt="b3" src="https://github.com/user-attachments/assets/10503e71-bdb4-42a6-98f9-5afb1d300b7e" />
+
+<img width="1328" height="808" alt="b4" src="https://github.com/user-attachments/assets/d5d6fd42-4979-4c00-b7e6-e637a6a5dc1d" />
+
+<img width="1328" height="808" alt="b5" src="https://github.com/user-attachments/assets/f182bece-f30d-4617-b53a-a9eaea42d2bf" />
+
+
+
+
