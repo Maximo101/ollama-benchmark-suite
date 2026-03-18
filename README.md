@@ -21,13 +21,21 @@ A robust profiling tool that tests models against a standardized set of prompts 
 * Logs average power draw during inference using `nvidia-smi`.
 * Outputs everything to a timestamped CSV for easy graphing and comparison.
 
+## 📊 Results & Visualization
+The `/results` directory contains tools to visualize your benchmark data.
+
+### Ollama Benchmark Dashboard
+A zero-dependency Python script that generates an interactive HTML report.
+* **Auto-detects** the latest CSV in the folder.
+* **Charts** include TPS vs. Params, Power Efficiency, and VRAM usage.
+* **Requirements:** Python 3.8+ (No third-party packages required).
 ---
 
 ## 🔬 Technical Deep Dive: The Benchmark Architecture
 
 Standard benchmarking often suffers from "warm cache" bias. If you query a model twice, the second query is artificially faster because the weights are already loaded into VRAM or cached by the operating system. 
 
-The `ollama_benchmark_v11google.sh` script eliminates this variable to provide true "Cold Boot" metrics. Here is how the logic works:
+The `ollama_benchmark_v1.sh` script eliminates this variable to provide true "Cold Boot" metrics. Here is how the logic works:
 
 ### 1. Hard VRAM Purge & API Unload
 Before a benchmark begins, the script explicitly calls the Ollama API to unload any active models from memory. It doesn't just wait for a timeout; it actively severs the memory allocation to ensure the GPU is at its baseline resting state.
@@ -70,6 +78,30 @@ chmod +x *.sh
 ```
 
 > **Note:** All output logs and CSV files are automatically saved to the `results/` folder.
+
+**Dashboard Usage:**
+Run the 'ollama_benchmark_dashboard.py' from in the results folder. Then open the .html output in a browser.
+```bash
+cd results
+```
+# Auto-detects the newest benchmark_results*.csv in the same folder
+```bash
+python ollama_benchmark_dashboard.py
+```
+_Note: If python doesnt work try python3_
+```bash
+python3 ollama_benchmark_dashboard.py
+```
+
+# Explicit CSV
+```bash
+python ollama_benchmark_dashboard.py benchmark_results_v12_2026-04-01.csv
+```
+# Explicit CSV + custom output name
+```bash
+python ollama_benchmark_dashboard.py my_results.csv report.html
+```
+---
 
 ## Reference
 [Ollama](https://ollama.com/)
