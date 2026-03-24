@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# OLLAMA AI BENCHMARK SCRIPT v1.0
+# OLLAMA AI BENCHMARK SCRIPT v1.1
 # Features: Hard VRAM Purge, OS Cache Flush, VRAM vs RAM Split Detection
 # ==============================================================================
 
@@ -157,3 +157,22 @@ done <<< "$MODELS_LIST"
 
 chown -R nobody:users "$BASE_DIR" && chmod -R 777 "$BASE_DIR"
 echo "✅ Benchmark Complete. Results: $OUTPUT_CSV"
+
+# --- LAUNCH DASHBOARD ---
+DASHBOARD_SCRIPT="$RESULTS_DIR/ollama_benchmark_dashboard.py"
+LATEST_CSV=$(ls -t "$RESULTS_DIR"/benchmark_results_*.csv 2>/dev/null | head -n 1)
+
+if [ ! -f "$DASHBOARD_SCRIPT" ]; then
+    echo "⚠️  Dashboard script not found: $DASHBOARD_SCRIPT"
+elif [ -z "$LATEST_CSV" ]; then
+    echo "⚠️  No benchmark CSV found in $RESULTS_DIR"
+else
+    echo "📊 Launching dashboard with: $LATEST_CSV"
+    if command -v python &> /dev/null; then
+        python "$DASHBOARD_SCRIPT" "$LATEST_CSV"
+    elif command -v python3 &> /dev/null; then
+        python3 "$DASHBOARD_SCRIPT" "$LATEST_CSV"
+    else
+        echo "❌ Python not found. Cannot launch dashboard."
+    fi
+fi
