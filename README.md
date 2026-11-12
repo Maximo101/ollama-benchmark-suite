@@ -26,7 +26,6 @@ chmod +x *.sh
 ./update_ollama_models.sh      # optional: bring models up to date first
 sudo ./ollama_benchmark.sh     # root lets it flush the page cache (see below)
 
-cd results
 python3 ollama_benchmark_dashboard.py   # writes <csv name>_dashboard.html next to the CSV
 ```
 
@@ -164,6 +163,8 @@ The report is saved next to the CSV (in `results/`). Open the `.html` file in a 
 [Ollama](https://ollama.com/) · [Ollama API docs](https://github.com/ollama/ollama/blob/main/docs/api.md)
 
 ## Dashboard example
+
+* 📊 **Example Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/ollama-benchmark-suite/blob/main/assets/dashboard.html)
 
 <img width="1328" height="656" alt="b1" src="https://github.com/user-attachments/assets/f735248c-72f2-4a68-8f4a-04bb343be5c0" />
 
