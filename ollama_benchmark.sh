@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OLLAMA BENCHMARK v2.0
+# OLLAMA BENCHMARK v1.10
 #   Cold-boot load timing · VRAM/RAM split · real power sampling · graded prompts
 #
 # Usage:   ./ollama_benchmark.sh [options]
@@ -22,7 +22,7 @@
 # ==============================================================================
 set -uo pipefail
 
-VERSION="2.0"
+VERSION="1.1"
 
 # --- CONFIGURATION -----------------------------------------------------------
 BASE_DIR="$(dirname "$(realpath "$0")")"
@@ -125,7 +125,7 @@ if ! curl -sf --max-time 10 "$OLLAMA/api/version" >/dev/null; then
 fi
 
 mkdir -p "$RESULTS_DIR"
-OUTPUT_CSV="$RESULTS_DIR/benchmark_results_v2_$(date +%Y-%m-%d_%H-%M-%S).csv"
+OUTPUT_CSV="$RESULTS_DIR/benchmark_results_v1.1_$(date +%Y-%m-%d_%H-%M-%S).csv"
 TMP_DIR=$(mktemp -d)
 POWER_FILE="$TMP_DIR/power.txt"
 SAMPLER_PID=""

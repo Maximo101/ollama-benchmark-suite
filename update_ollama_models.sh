@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OLLAMA MODEL UPDATER v2.0
+# OLLAMA MODEL UPDATER v1.1
 # Pulls the latest version of every installed model and writes a CSV report.
 #
 # Usage:   ./update_ollama_models.sh [options]

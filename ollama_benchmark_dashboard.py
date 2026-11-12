@@ -11,8 +11,8 @@ self-contained HTML dashboard (Chart.js is loaded from a CDN unless you pass
 Usage
 ─────
   python3 ollama_benchmark_dashboard.py                         # newest benchmark_results*.csv
-  python3 ollama_benchmark_dashboard.py my_results.csv          # explicit CSV
-  python3 ollama_benchmark_dashboard.py my_results.csv out.html # explicit CSV + output name
+  python3 ollama_benchmark_dashboard.py results/my_results.csv          # explicit CSV
+  python3 ollama_benchmark_dashboard.py results/my_results.csv out.html # explicit CSV + output name
   python3 ollama_benchmark_dashboard.py --vram 24               # override the VRAM limit (GB)
   python3 ollama_benchmark_dashboard.py --min-accuracy 75       # stricter podium filter
   python3 ollama_benchmark_dashboard.py --embed-chartjs         # offline report (downloads once)
