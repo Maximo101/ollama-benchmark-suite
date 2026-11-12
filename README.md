@@ -109,6 +109,8 @@ python3 ollama_inventory.py -u http://nas:11434  # explicit server
 
 `ollama_benchmark_dashboard.py` generates a single HTML file with podium rankings (Goldilocks = bigger *and* faster; Agent = tool-calling models), TPS, accuracy, quantisation, power-efficiency, VRAM-vs-RAM and **cold-load-time** charts, plus a sortable comparison table.
 
+* 📊 **Example Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/ollama-benchmark-suite/blob/main/assets/dashboard.html)
+
 ```bash
 python3 ollama_benchmark_dashboard.py                                       # newest results/benchmark_results*.csv
 python3 ollama_benchmark_dashboard.py results/my_results.csv                # explicit CSV
@@ -125,7 +127,7 @@ The report is saved next to the CSV (in `results/`). Open the `.html` file in a 
 * Only models fully resident in VRAM (`RAM_GB = 0`) are ranked; spill models still appear in the table and VRAM chart. On a CPU-only machine nothing qualifies, so the podiums will be empty.
 * The dashboard still reads older CSVs; columns that did not exist then (cold load, prefill) simply show `—`.
 
-## 🆕 What changed in v2
+## 🆕 What changed in v1.1
 
 **Breaking / comparability**
 
