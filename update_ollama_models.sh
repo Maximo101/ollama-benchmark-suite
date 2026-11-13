@@ -47,11 +47,22 @@ done
 resolve_ollama_url() {
     if [ -n "${OLLAMA_URL:-}" ]; then echo "${OLLAMA_URL%/}"; return; fi
     if command -v docker >/dev/null 2>&1; then
-        local cid ip
+        local cid ip loose=()
         cid=$(docker ps -q --filter "name=^/?${OLLAMA_CONTAINER_NAME}\$" 2>/dev/null | head -n 1)
-        [ -z "$cid" ] && cid=$(docker ps -q --filter "name=${OLLAMA_CONTAINER_NAME}" 2>/dev/null | head -n 1)
+        if [ -z "$cid" ]; then
+            # No exact match: accept a partial name match only when it is unambiguous
+            # (otherwise "ollama" would also match e.g. "ollama-webui").
+            mapfile -t loose < <(docker ps -q --filter "name=${OLLAMA_CONTAINER_NAME}" 2>/dev/null)
+            if [ "${#loose[@]}" -eq 1 ]; then
+                cid="${loose[0]}"
+            elif [ "${#loose[@]}" -gt 1 ]; then
+                echo "⚠️  ${#loose[@]} running containers match '${OLLAMA_CONTAINER_NAME}'; set OLLAMA_CONTAINER to the exact name or set OLLAMA_URL. Trying localhost." >&2
+            fi
+        fi
         if [ -n "$cid" ]; then
-            ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cid" 2>/dev/null)
+            # One address per network, space separated - use the first (none with host networking).
+            ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" 2>/dev/null)
+            read -r ip _ <<<"$ip"
             [ -n "$ip" ] && { echo "http://$ip:11434"; return; }
         fi
     fi
@@ -92,7 +103,7 @@ pull_model() {
         END { print (result == "" ? "ERR:no response from server" : result) }'
 }
 
-echo "${BLUE}=== Ollama Model Updater v2.0 ===${NC}"
+echo "${BLUE}=== Ollama Model Updater v1.1 ===${NC}"
 echo "${BLUE}Server  : $OLLAMA${NC}"
 echo "${BLUE}Started : $(date)${NC}"
 echo "${BLUE}Report  : $CSV_FILE${NC}"

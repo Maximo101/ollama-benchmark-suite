@@ -9,12 +9,20 @@
 #   -r, --runs N          run the prompt set N times per model (default 1)
 #       --no-flush        do not drop the Linux page cache between models
 #       --include-cloud   also benchmark cloud/remote models (off by default)
+#       --no-dashboard    do not generate the HTML dashboard after the run
 #   -h, --help            show this help
+#
+# After a successful run the HTML dashboard is generated automatically from this
+# run's CSV (needs python3 3.8+; if that fails you get a warning, not an error).
 #
 # Environment overrides:
 #   OLLAMA_URL         e.g. http://192.168.1.10:11434 (skips container detection)
 #   OLLAMA_CONTAINER   docker container name to look for (default: ollama)
-#   NUM_PREDICT        max tokens per answer (default 4096)
+#   OLLAMA_REMOTE      1 = the server is another machine, 0 = it is this machine
+#                      (default: auto-detect). On a remote server GPU info, power
+#                      sampling and the page-cache flush are disabled, because
+#                      they would measure this machine instead of the server.
+#   NUM_PREDICT       max tokens per answer (default 4096)
 #   KEEP_ALIVE         how long the model stays loaded during its run (default 10m)
 #   GPU_IDS            comma separated nvidia-smi GPU indexes to sample for power
 #   RESULTS_OWNER      chown the results dir to this user:group (root only;
@@ -27,6 +35,7 @@ VERSION="1.1"
 # --- CONFIGURATION -----------------------------------------------------------
 BASE_DIR="$(dirname "$(realpath "$0")")"
 RESULTS_DIR="$BASE_DIR/results"
+DASHBOARD_SCRIPT="$BASE_DIR/ollama_benchmark_dashboard.py"
 OLLAMA_CONTAINER_NAME="${OLLAMA_CONTAINER:-ollama}"
 NUM_PREDICT="${NUM_PREDICT:-4096}"
 KEEP_ALIVE="${KEEP_ALIVE:-10m}"
@@ -38,6 +47,7 @@ REQ_TIMEOUT_LOAD=900   # curl --max-time for a cold load
 REQ_TIMEOUT_GEN=1200   # curl --max-time for one answer
 
 MODEL_FILTER=""; MODEL_EXCLUDE=""; RUNS=1; FLUSH=1; INCLUDE_CLOUD=0
+DASHBOARD=1; DASHBOARD_HTML=""
 
 usage() { sed -n '3,/^# =====/p' "$0" | sed '$d;s/^# \{0,1\}//'; }
 
@@ -48,6 +58,7 @@ while [ $# -gt 0 ]; do
         -r|--runs)       RUNS="${2:?missing value for $1}"; shift 2 ;;
         --no-flush)      FLUSH=0; shift ;;
         --include-cloud) INCLUDE_CLOUD=1; shift ;;
+        --no-dashboard)  DASHBOARD=0; shift ;;
         -h|--help)       usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -108,11 +119,22 @@ done
 resolve_ollama_url() {
     if [ -n "${OLLAMA_URL:-}" ]; then echo "${OLLAMA_URL%/}"; return; fi
     if command -v docker >/dev/null 2>&1; then
-        local cid ip
+        local cid ip loose=()
         cid=$(docker ps -q --filter "name=^/?${OLLAMA_CONTAINER_NAME}\$" 2>/dev/null | head -n 1)
-        [ -z "$cid" ] && cid=$(docker ps -q --filter "name=${OLLAMA_CONTAINER_NAME}" 2>/dev/null | head -n 1)
+        if [ -z "$cid" ]; then
+            # No exact match: accept a partial name match only when it is unambiguous
+            # (otherwise "ollama" would also match e.g. "ollama-webui").
+            mapfile -t loose < <(docker ps -q --filter "name=${OLLAMA_CONTAINER_NAME}" 2>/dev/null)
+            if [ "${#loose[@]}" -eq 1 ]; then
+                cid="${loose[0]}"
+            elif [ "${#loose[@]}" -gt 1 ]; then
+                echo "⚠️  ${#loose[@]} running containers match '${OLLAMA_CONTAINER_NAME}'; set OLLAMA_CONTAINER to the exact name or set OLLAMA_URL. Trying localhost." >&2
+            fi
+        fi
         if [ -n "$cid" ]; then
-            ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cid" 2>/dev/null)
+            # One address per network, space separated - use the first (none with host networking).
+            ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" 2>/dev/null)
+            read -r ip _ <<<"$ip"
             [ -n "$ip" ] && { echo "http://$ip:11434"; return; }
         fi
     fi
@@ -124,17 +146,51 @@ if ! curl -sf --max-time 10 "$OLLAMA/api/version" >/dev/null; then
     exit 1
 fi
 
+# Is the server on THIS machine? nvidia-smi and drop_caches act on the local machine,
+# so GPU info, power sampling and the page-cache flush are only valid (and only enabled)
+# when it is. A URL found via Docker or the localhost fallback is local by definition.
+server_is_local() {
+    case "${OLLAMA_REMOTE:-}" in 0) return 0 ;; 1) return 1 ;; esac
+    [ -n "${OLLAMA_URL:-}" ] || return 0
+    local h me a
+    h="${OLLAMA#*://}"; h="${h%%/*}"; h="${h##*@}"
+    if [[ "$h" == \[* ]]; then h="${h#\[}"; h="${h%%\]*}"; else h="${h%%:*}"; fi
+    h=$(tr '[:upper:]' '[:lower:]' <<<"$h")
+    case "$h" in localhost|127.*|::1|0.0.0.0) return 0 ;; esac
+    me=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    if [ -n "$me" ] && [[ ! "$h" =~ ^[0-9.]+$ ]] && [ "${h%%.*}" = "${me%%.*}" ]; then return 0; fi
+    for a in $(hostname -I 2>/dev/null); do [ "$h" = "$a" ] && return 0; done
+    return 1
+}
+SERVER_LOCAL=1
+if ! server_is_local; then
+    SERVER_LOCAL=0
+    echo "⚠️  $OLLAMA is not this machine: GPU info, power sampling and the page-cache flush are disabled"
+    echo "    (they would measure this machine, not the server). If the server does run here, set OLLAMA_REMOTE=0."
+fi
+
+# Create the results file atomically; a run started in the same second gets a numbered name
+# instead of appending to (and corrupting) the other run's CSV.
 mkdir -p "$RESULTS_DIR"
-OUTPUT_CSV="$RESULTS_DIR/benchmark_results_v1.1_$(date +%Y-%m-%d_%H-%M-%S).csv"
+STAMP=$(date +%Y-%m-%d_%H-%M-%S)
+OUTPUT_CSV="$RESULTS_DIR/benchmark_results_v${VERSION}_${STAMP}.csv"
+csv_try=1
+until ( set -o noclobber; : > "$OUTPUT_CSV" ) 2>/dev/null; do
+    csv_try=$((csv_try + 1))
+    [ "$csv_try" -gt 99 ] && { echo "❌ Cannot create a results file in $RESULTS_DIR" >&2; exit 1; }
+    OUTPUT_CSV="$RESULTS_DIR/benchmark_results_v${VERSION}_${STAMP}_${csv_try}.csv"
+done
 TMP_DIR=$(mktemp -d)
 POWER_FILE="$TMP_DIR/power.txt"
 SAMPLER_PID=""
+DATA_ROWS=0            # CSV rows written, not counting the header
+GRADED_PROMPTS=4       # the first N entries of PROMPTS are graded, the rest are informational
 
-# GPU info (optional)
+# GPU info (optional, local servers only)
 NVIDIA=0; GPU_NAME="none"; GPU_VRAM_GB=""; GPU_COUNT=0
 GPU_ARGS=()
 [ -n "${GPU_IDS:-}" ] && GPU_ARGS=(-i "$GPU_IDS")
-if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+if [ "$SERVER_LOCAL" = 1 ] && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
     NVIDIA=1
     GPU_NAME=$(nvidia-smi "${GPU_ARGS[@]}" --query-gpu=name --format=csv,noheader | paste -sd'+' -)
     GPU_COUNT=$(nvidia-smi "${GPU_ARGS[@]}" --query-gpu=index --format=csv,noheader | wc -l)
@@ -145,7 +201,7 @@ fi
 # Cache flushing needs root (or passwordless sudo)
 CACHE_FLUSHED="no"
 can_flush=0
-if [ "$FLUSH" = 1 ]; then
+if [ "$FLUSH" = 1 ] && [ "$SERVER_LOCAL" = 1 ]; then
     if [ "$(id -u)" = 0 ]; then can_flush=1
     elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then can_flush=1
     else echo "⚠️  Not root and no passwordless sudo: page cache will NOT be flushed (cold loads may be optimistic)."; fi
@@ -164,8 +220,11 @@ flush_page_cache() {
 
 # --- HELPERS -----------------------------------------------------------------
 cleanup() {
-    stop_power_sampler >/dev/null 2>&1
+    stop_power_sampler
     rm -rf "$TMP_DIR"
+    # A header-only CSV is clutter, and the dashboard's "newest CSV" lookup would pick it up.
+    [ "$DATA_ROWS" -eq 0 ] && rm -f "$OUTPUT_CSV"
+    return 0
 }
 on_interrupt() { echo; echo "⛔ Interrupted - unloading models and exiting."; unload_all; finalize; exit 130; }
 trap cleanup EXIT
@@ -180,7 +239,46 @@ finalize() {
     fi
 }
 
-csv_row() { jq -nr '$ARGS.positional | @csv' --args -- "$@" >> "$OUTPUT_CSV"; }
+csv_row() { jq -nr '$ARGS.positional | @csv' --args -- "$@" >> "$OUTPUT_CSV" && DATA_ROWS=$((DATA_ROWS + 1)); }
+
+# "Correct" value for a prompt that produced no answer ($1 = 0-based prompt index):
+# graded prompts count as wrong, informational ones stay ungraded.
+no_answer_grade() { if [ "$1" -lt "$GRADED_PROMPTS" ]; then echo "No"; else echo "Info/Creative"; fi; }
+
+# Builds the HTML dashboard from THIS run's CSV. Both paths are passed explicitly:
+# the CSV so the dashboard's "newest CSV" auto-discovery can never pick up another
+# run's file, and the HTML so it is guaranteed to land in results/ next to the CSV.
+# Always returns 0 - a dashboard problem is a warning, never a benchmark failure.
+# Sets DASHBOARD_HTML to the output path on success.
+generate_dashboard() {
+    [ "$DASHBOARD" = 1 ] || return 0
+    local html="${OUTPUT_CSV%.csv}_dashboard.html" rc=0
+    local retry="python3 \"$DASHBOARD_SCRIPT\" \"$OUTPUT_CSV\""
+
+    if [ "$n_done" -eq 0 ]; then
+        echo "ℹ️  Dashboard skipped: no model completed the benchmark, so there is nothing to chart."
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "⚠️  Dashboard NOT generated: python3 was not found in PATH (the benchmark CSV is unaffected)." >&2
+        echo "    Install Python 3.8+ and run:  $retry" >&2
+        return 0
+    fi
+    if [ ! -f "$DASHBOARD_SCRIPT" ]; then
+        echo "⚠️  Dashboard NOT generated: $DASHBOARD_SCRIPT is missing (the benchmark CSV is unaffected)." >&2
+        echo "    Put ollama_benchmark_dashboard.py next to this script and run:  $retry" >&2
+        return 0
+    fi
+
+    echo "📊 Generating dashboard..."
+    python3 "$DASHBOARD_SCRIPT" "$OUTPUT_CSV" "$html" || rc=$?
+    if [ "$rc" -ne 0 ] || [ ! -s "$html" ]; then
+        echo "⚠️  Dashboard NOT generated: the dashboard script exited with status $rc ($(python3 -V 2>&1); needs 3.8+)." >&2
+        echo "    The benchmark CSV is unaffected. To retry:  $retry" >&2
+        return 0
+    fi
+    DASHBOARD_HTML="$html"
+}
 
 unload_all() {
     local m
@@ -204,13 +302,19 @@ start_power_sampler() {
     SAMPLER_PID=$!
 }
 
-# Prints average TOTAL power (sum over sampled GPUs) in watts, or 0.00
+# Stops the sampler and waits until it has exited, so the power file is complete.
+# Must be called in the main shell, NOT inside $(...): a subshell cannot wait on the
+# sampler and cannot clear SAMPLER_PID, which would leave a stale PID to be killed later.
 stop_power_sampler() {
-    if [ -n "$SAMPLER_PID" ]; then
-        kill "$SAMPLER_PID" 2>/dev/null
-        { wait "$SAMPLER_PID"; } 2>/dev/null
-        SAMPLER_PID=""
-    fi
+    [ -n "$SAMPLER_PID" ] || return 0
+    kill "$SAMPLER_PID" 2>/dev/null
+    wait "$SAMPLER_PID" 2>/dev/null
+    SAMPLER_PID=""
+    return 0
+}
+
+# Prints average TOTAL power (sum over sampled GPUs) in watts, or 0.00
+average_power() {
     [ "$NVIDIA" = 1 ] && [ -s "$POWER_FILE" ] || { echo "0.00"; return; }
     awk -v n="$GPU_COUNT" '$1 ~ /^[0-9.]+$/ {s+=$1; c++} END {if (c) printf "%.2f", s/c*n; else printf "0.00"}' "$POWER_FILE"
 }
@@ -228,6 +332,7 @@ csv_row "Model" "Size (GB)" "Arch" "Params" "Context" "Embed" "Quant" "Capabilit
         "VRAM_GB" "RAM_GB" "GPU" "GPU_VRAM_GB" "Cache_Flushed" \
         "Test Type" "Prompt" "Correct" "Latency (s)" "Load (s)" "TTFT (s)" "Prefill TPS" \
         "Eval Count" "TPS" "Power (W)" "Response"
+DATA_ROWS=0            # the header is not data
 
 echo "🧪 Ollama Benchmark v$VERSION"
 echo "🌐 Server : $OLLAMA"
@@ -237,14 +342,15 @@ echo "------------------------------------------------------"
 
 # --- MODEL LIST (from the API - no CLI scraping) -----------------------------
 MODELS_TSV=$(curl -s "$OLLAMA/api/tags" | jq -r --argjson cloud "$INCLUDE_CLOUD" '
-    .models | sort_by(.name)[]
-    | select($cloud == 1 or (((.remote_host // "") == "") and (.name | test("[:-]cloud$") | not)))
-    | [.name, .size] | @tsv')
+    (.models // []) | sort_by(.name)[]
+    | (((.remote_host // "") != "") or (.name | test("[:-]cloud$"))) as $is_cloud
+    | select($cloud == 1 or ($is_cloud | not))
+    | [.name, (.size // 0), (if $is_cloud then 1 else 0 end)] | @tsv')
 if [ -z "$MODELS_TSV" ]; then echo "❌ No models found."; exit 1; fi
 
 n_done=0; n_skipped=0; n_failed=0
 
-while IFS=$'\t' read -r -u 3 MODEL_NAME SIZE_BYTES; do
+while IFS=$'\t' read -r -u 3 MODEL_NAME SIZE_BYTES IS_CLOUD; do
     [ -z "$MODEL_NAME" ] && continue
     if [ -n "$MODEL_FILTER" ]  && ! grep -Eq "$MODEL_FILTER"  <<<"$MODEL_NAME"; then continue; fi
     if [ -n "$MODEL_EXCLUDE" ] &&   grep -Eq "$MODEL_EXCLUDE" <<<"$MODEL_NAME"; then continue; fi
@@ -293,6 +399,9 @@ while IFS=$'\t' read -r -u 3 MODEL_NAME SIZE_BYTES; do
         | [((.size_vram // 0) / 1073741824), (((.size // 0) - (.size_vram // 0)) / 1073741824)]
         | map(. * 100 | round / 100 | tostring) | join(" ")')
     V_GB="${V_GB:-0}"; R_GB="${R_GB:-0}"
+    # Cloud models use no local memory: leave both cells EMPTY (not 0), which is the
+    # marker the dashboard uses to keep cloud/API models out of the local rankings.
+    if [ "${IS_CLOUD:-0}" = 1 ]; then V_GB=""; R_GB=""; fi
 
     VARS=("$V_GB" "$R_GB" "$GPU_NAME" "$GPU_VRAM_GB" "$CACHE_FLUSHED")
     if [ -z "$COLD_RES" ] || [ "$(jq -r 'has("error")' <<<"$COLD_RES" 2>/dev/null)" != "false" ]; then
@@ -300,7 +409,7 @@ while IFS=$'\t' read -r -u 3 MODEL_NAME SIZE_BYTES; do
         csv_row "${META_COLS[@]}" "${VARS[@]}" "COLD_BOOT" "Load Test" "N/A" "$COLD_WALL" "$COLD_LOAD" "" "" "" "" "" "Failed"
         n_failed=$((n_failed + 1)); echo "------------------------------------------------------"; continue
     fi
-    echo "   ❄️  Cold boot: ${COLD_WALL}s wall (${COLD_LOAD}s load) | VRAM ${V_GB} GiB | RAM ${R_GB} GiB | cache flushed: $CACHE_FLUSHED"
+    echo "   ❄️  Cold boot: ${COLD_WALL}s wall (${COLD_LOAD}s load) | VRAM ${V_GB:-n/a} GiB | RAM ${R_GB:-n/a} GiB | cache flushed: $CACHE_FLUSHED"
     csv_row "${META_COLS[@]}" "${VARS[@]}" "COLD_BOOT" "Load Test" "N/A" "$COLD_WALL" "$COLD_LOAD" "" "" "" "" "" "Loaded"
 
     # 5. Discarded warm-up so first-inference overhead does not skew prompt 1
@@ -312,12 +421,13 @@ while IFS=$'\t' read -r -u 3 MODEL_NAME SIZE_BYTES; do
             PROMPT_TEXT="${PROMPTS[$i]}"
             start_power_sampler
             RES=$(generate "$MODEL_NAME" "$PROMPT_TEXT" "$NUM_PREDICT" "$REQ_TIMEOUT_GEN")
-            AVG_P=$(stop_power_sampler)
+            stop_power_sampler
+            AVG_P=$(average_power)
 
             ERR=$(jq -r '.error // empty' <<<"$RES" 2>/dev/null)
             if [ -z "$RES" ] || ! jq -e . >/dev/null 2>&1 <<<"$RES" || [ -n "$ERR" ]; then
                 echo "   Prompt $((i + 1)): FAILED ${ERR:-(no response / timeout)}"
-                csv_row "${META_COLS[@]}" "${VARS[@]}" "WARM" "$PROMPT_TEXT" "No" "0" "0" "0" "0" "0" "0" "$AVG_P" "[No response received]"
+                csv_row "${META_COLS[@]}" "${VARS[@]}" "WARM" "$PROMPT_TEXT" "$(no_answer_grade "$i")" "0" "0" "0" "0" "0" "0" "$AVG_P" "[No response received]"
                 continue
             fi
 
@@ -329,7 +439,7 @@ while IFS=$'\t' read -r -u 3 MODEL_NAME SIZE_BYTES; do
             RAW_TEXT=$(jq -r '.response // ""' <<<"$RES")
             if [ -z "$RAW_TEXT" ]; then
                 CLEAN="[No final answer - ${EVAL_N} tokens generated, possibly cut off by num_predict=$NUM_PREDICT]"
-                IS_CORRECT=$([ "$i" -le 3 ] && echo "No" || echo "Info/Creative")
+                IS_CORRECT=$(no_answer_grade "$i")
             else
                 IS_CORRECT=$(grade_answer "$((i + 1))" "$RAW_TEXT")
                 # one line, 1000 chars, neutralise spreadsheet formula prefixes
@@ -346,6 +456,10 @@ while IFS=$'\t' read -r -u 3 MODEL_NAME SIZE_BYTES; do
     echo "------------------------------------------------------"
 done 3<<<"$MODELS_TSV"
 
+generate_dashboard     # before finalize, so the HTML gets the same ownership fix as the CSV
 finalize
 echo "✅ Done: $n_done benchmarked, $n_failed failed to load, $n_skipped skipped."
-echo "📄 Results: $OUTPUT_CSV"
+if [ "$DATA_ROWS" -gt 0 ]; then echo "📄 Results  : $OUTPUT_CSV"
+else echo "📄 Nothing was recorded, so no results file was kept."; fi
+if [ -n "$DASHBOARD_HTML" ]; then echo "📊 Dashboard: $DASHBOARD_HTML"; fi
+exit 0                 # the exit status reflects the benchmark only, never the dashboard step

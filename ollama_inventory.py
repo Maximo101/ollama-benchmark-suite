@@ -34,6 +34,11 @@ HEADERS = ["Model", "Size (GB)", "Arch", "Params", "Context", "Embed", "Quant",
            "Capabilities", "Temp", "License"]
 
 
+def _docker(*args: str) -> str:
+    """stdout of a docker command ('' if it prints nothing)."""
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=10).stdout
+
+
 def resolve_url(cli_url: str | None, container: str) -> str:
     """CLI flag > $OLLAMA_URL > Docker container IP > localhost."""
     if cli_url:
@@ -42,15 +47,22 @@ def resolve_url(cli_url: str | None, container: str) -> str:
         return os.environ["OLLAMA_URL"].rstrip("/")
     if shutil.which("docker"):
         try:
-            ids = subprocess.run(["docker", "ps", "-q", "--filter", f"name={container}"],
-                                 capture_output=True, text=True, timeout=10).stdout.split()
+            ids = _docker("ps", "-q", "--filter", f"name=^/?{container}$").split()
+            if not ids:
+                # No exact match: accept a partial name match only when it is unambiguous
+                # (otherwise "ollama" would also match e.g. "ollama-webui").
+                loose = _docker("ps", "-q", "--filter", f"name={container}").split()
+                if len(loose) == 1:
+                    ids = loose
+                elif len(loose) > 1:
+                    print(f"⚠️  {len(loose)} running containers match '{container}'; pass --container with "
+                          "the exact name or use --url. Trying localhost.", file=sys.stderr)
             if ids:
-                ip = subprocess.run(
-                    ["docker", "inspect", "-f",
-                     "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", ids[0]],
-                    capture_output=True, text=True, timeout=10).stdout.strip()
-                if ip:
-                    return f"http://{ip}:11434"
+                # One address per network, space separated - use the first (none with host networking).
+                ips = _docker("inspect", "-f",
+                              "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", ids[0]).split()
+                if ips:
+                    return f"http://{ips[0]}:11434"
         except (subprocess.SubprocessError, OSError):
             pass
     return "http://localhost:11434"
